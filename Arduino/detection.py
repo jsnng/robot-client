@@ -1,9 +1,10 @@
+'''sample code to detect ardunio via using USB vender ids'''
 #! /usr/bin/env -S python3 -B
 
 import serial
 from serial.tools import list_ports
 
-def detect_ardunio_device():
+def detect_ardunio_device() -> str:
     USBVID = [0x2341, 0x2a03]
     devices = list_ports.comports()
     devices = [x for x in devices if x.vid in USBVID]

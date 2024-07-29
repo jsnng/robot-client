@@ -1,3 +1,4 @@
+'''sample code updating ardunio via ardunino-cli'''
 #! /usr/bin/env -S python3 -B
 
 import pyduinocli
@@ -17,7 +18,7 @@ if __name__ == '__main__':
 
     port = None
     fqbn = None
-    for result in boards['result']:
+    for result in boards['result']['detected_ports']:
         # check if there are any ardunio devices
         if 'matching_boards' in result.keys():
             # get the COM port and FQBN (Fully Qualified Board Name)
@@ -29,6 +30,6 @@ if __name__ == '__main__':
         raise UserWarning('`arduino-cli` found 0 compatible devices')
     
     # compile the ardunio project
-    arduino.compile(fqbn=fqbn, sketch="Kicker")
+    arduino.compile(fqbn=fqbn, sketch="Robot")
     # upload the ardunio project to detected device
-    arduino.upload(fqbn=fqbn, sketch="Kicker", port=port)
+    arduino.upload(fqbn=fqbn, sketch="Robot", port=port)

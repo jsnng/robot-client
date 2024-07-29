@@ -1,3 +1,4 @@
+'''controller for moteus motor controllers'''
 from Client.Controllers.BaseController import BaseController
 from Client.Shared.Action import Action
 import math
@@ -5,13 +6,47 @@ import math
 import numpy as np
 import time
 
-import moteus
-import moteus_pi3hat
+import logging
+
+log = logging.getLogger()
+log.setLevel(logging.NOTSET)
+
+try:
+    import moteus
+except ImportError as e:
+    log.warning(e)
+try: 
+    import moteus_pi3hat # This requires pi3hat on top of RP4
+except ImportError as e:
+    log.warning(e)
 
 import asyncio
+import argparse
 
-class Motor(BaseController):
-    def __init__(self):
+class MotorController(BaseController):
+    # VELOCITY_LOWER_LIMIT: float = .001 # rate of .1 revolutions per second
+    VELOCITY_UPPER_LIMIT: float = 100.
+
+    # (x, y) coordinates from robot's centre to wheel's centre in mm
+    OMNIWHEEL_1_XY_COORDINATES: tuple[float, float] = (63.869,36.875)
+    OMNIWHEEL_2_XY_COORDINATES: tuple[float, float] = (52.149,-52.149)
+    OMNIWHEEL_3_XY_COORDINATES: tuple[float, float] = (-52.149,-52.149)
+    OMNIWHEEL_4_XY_COORDINATES: tuple[float, float] = (-63.869,36.875)
+
+    # angle of wheel's direction of travel when rotating clockwise
+    # referenced from the robot's forward movement
+    OMNIWHEEL_1_CW_ANGLE_DEG: int = -120
+    OMNIWHEEL_2_CW_ANGLE_DEG: int = -45
+    OMNIWHEEL_3_CW_ANGLE_DEG: int = 45
+    OMNIWHEEL_4_CW_ANGLE_DEG: int = 120
+
+    # radius of omniwheel in mm
+    OMNIWHEEL_1_RADIUS: float = 33.5
+    OMNIWHEEL_2_RADIUS: float = 33.5
+    OMNIWHEEL_3_RADIUS: float = 33.5
+    OMNIWHEEL_4_RADIUS: float = 33.5
+
+    def __init__(self, shared_global_resource) -> None:
         """_summary_
             initiate the motor controller with Moteus and Moteus pi3hat
         Params : 
@@ -22,33 +57,38 @@ class Motor(BaseController):
             servos(map) : establish connection of moteus boards and pi3hat
         """
 
-        super().__init__()
+        super().__init__(shared_global_resource)
 
-        self.interval = 500 # ms
-        self.u = 1. # 'mm' * self.u
+        self._interval: float = 1 # ms
+        self._u: float = 1. # motor movement is in 'mm' can be scaled by changing self.u
     
-        self.servo_bus_map = { 
+        self.servo_bus_map: dict = { 
                     1: [1],
                     2: [2],
                     3: [3],
-                    4: [4]
+                    4: [4],
+                    5: [32]
                 }
 
         self.transport = moteus_pi3hat.Pi3HatRouter(
                 servo_bus_map = self.servo_bus_map
             )
-
-        self.servos = { 
+        
+        self.controllers: dict = { 
                 id: moteus.Controller(id=id, transport=self.transport)
                 for id in self.servo_bus_map.keys()
             }
-        self.set_b() # sets wheel degrees 
-        self.set_d() # sets distance to centre from each wheel
-        self.set_r() # sets radius of the wheel
-        print("Motor Controller initialised") #END
 
+        self.diagnostics = moteus.Controller(id=32, transport=self.transport)
+        self.steam = moteus.Stream(self.diagnostics)
+        
+        self.set_direction_of_cw_motion() # sets wheel degrees 
+        self.set_wheel_xy_location() # sets distance to centre from each wheel
+        self.set_wheel_radius() # sets radius of the wheel
+        log.info("motor controller(s) initialised") #END
 
-    async def action(self, action):
+    async def do(self, action: Action): # NOT IN USE
+        raise DeprecationWarning('use MotorController2')
         """_summary_
             runs the action (moving) applying to wheels
 
@@ -61,37 +101,37 @@ class Motor(BaseController):
         """
 
         ### Extracts from the ACTION sent
-        vx = getattr(action, 'vx')
-        vy = getattr(action, 'vy')
-        vw = getattr(action, 'vw')
+        vx = getattr(action, 'vx', 0.)
+        vy = getattr(action, 'vy', 0.)
+        vw = getattr(action, 'w', 0.)
 
-        print(f"self.calculate({vx}, {vy}, {vw})")
+        log.debug(f"{vx=}, {vy=}, {vw=}")
 
         # if vx, vy and vw are all 0s, stop the motors
-        if vx == 0. and vy == 0. and vw == 0.:
-            await self.transport.cycle(x.make_stop() for x in self.servos.values())
-            return
 
-        cmd = [
-            self.servos[id+1].make_position(
+        # if vx < self.VELOCITY_LOWER_LIMIT and vy < self.VELOCITY_LOWER_LIMIT and vw < self.VELOCITY_LOWER_LIMIT:
+        #     await self.transport.cycle(x.make_stop() for x in self.controller.values())
+        #     return
+
+        v1, v2, v3, v4 = self.calculate(vw, vx, vy) #calculate the velocity and send them back here
+
+        query = [
+            self.controllers[id+1].make_position(
                 position=math.nan,
                 velocity=velocity,
                 query=False
-            ) for id, velocity in enumerate(self.calculate(vw, vx, vy)) #calculate the velocity and send them back here
-            ## *This is a backwards for loop*
+            ) for id, velocity in enumerate([v1, v2, v3, v4])
         ]
 
-        ts = time.ticks_us()
-        while time.ticks_diff(time.ticks_us(), ts) > (self.interval * 1e3):
+        te = time.time() + self.interval
+        while time.time() < te:
+            # print(time.ticks_diff(time.ticks_us(), ts))
             # loop velocity
-            await self.transport.cycle(cmd)
-            # print debug results
-            # print(results)
-            # pass
-        #stops after the timer has ran out
-        await self.transport.cycle(x.make_stop() for x in self.servos.values())
+            result = await self.transport.cycle(query)
 
-    def calculate(self, vw, vx, vy):
+        await self._make_stop()
+
+    def calculate(self, vw: float, vx: float, vy: float) -> np.array:
         """_summary_
             calculates omniwheels' velocities using args: vx, vy and omega
             applying the omniwheel equation from:
@@ -113,80 +153,119 @@ class Motor(BaseController):
             w (array): returns all calculated wheel velocity
         """
 
-        # self.u = 1000
-        # self.set_d()
-        # self.set_r()
-
         uv =  np.array([
-            (1. / self.r) * ((self.d1 * vw) - (vx * np.sin(self.b1)) + (vy * np.cos(self.b1))),
-            (1. / self.r) * ((self.d2 * vw) - (vx * np.sin(self.b2)) + (vy * np.cos(self.b2))),
-            (1. / self.r) * ((self.d3 * vw) - (vx * np.sin(self.b3)) + (vy * np.cos(self.b3))),
-            (1. / self.r) * ((self.d4 * vw) - (vx * np.sin(self.b4)) + (vy * np.cos(self.b4)))
+            (1. / self.r1) * ((self.d1 * vw) - (vx * np.sin(self.b1)) + (vy * np.cos(self.b1))),
+            (1. / self.r2) * ((self.d2 * vw) - (vx * np.sin(self.b2)) + (vy * np.cos(self.b2))),
+            (1. / self.r3) * ((self.d3 * vw) - (vx * np.sin(self.b3)) + (vy * np.cos(self.b3))),
+            (1. / self.r4) * ((self.d4 * vw) - (vx * np.sin(self.b4)) + (vy * np.cos(self.b4)))
         ])
+        
+        for v in uv:
+            if v > self.VELOCITY_UPPER_LIMIT:
+                uv = np.array([0., 0., 0., 0.])
+                break
 
         uv = np.multiply(uv, 1/2*np.pi)
-        print(f"{__name__}.calculate({vw=}, {vx=}, {vy=}) = {uv=}")
+        log.debug(f"calculate({vw=}, {vx=}, {vy=}) = {uv=}")
         return uv
         
-    def set_b(self, b1=-120, b2=-45, b3=45, b4=120):
+    def set_direction_of_cw_motion(self) -> None:
         """_summary_
-
-        Args:
-            b1 (int, degrees): wheel degree to centre. Defaults to -120.
-            b2 (int, degrees): wheel degree to centre. Defaults to -45.
-            b3 (int, degrees): wheel degree to centre. Defaults to 45.
-            b4 (int, degrees): wheel degree to centre. Defaults to 120.
-            *THESE WILL BE CHANGED INTO RADIANS AFTERWARDS*
         """
-        self.b1 = np.radians(b1)
-        self.b2 = np.radians(b2)
-        self.b3 = np.radians(b3)
-        self.b4 = np.radians(b4)
+        self.b1 = np.radians(self.OMNIWHEEL_1_CW_ANGLE_DEG)
+        self.b2 = np.radians(self.OMNIWHEEL_2_CW_ANGLE_DEG)
+        self.b3 = np.radians(self.OMNIWHEEL_3_CW_ANGLE_DEG)
+        self.b4 = np.radians(self.OMNIWHEEL_4_CW_ANGLE_DEG)
 
-        print(f"{self.b1=}, {self.b2=}, {self.b3=}, {self.b4=}")
-
-    def set_d(self, d1=(63.869,36.875), d2=(52.149,-52.149), d3=(-52.149,-52.149), d4=(-63.869,36.875)):
+    def set_wheel_xy_location(self) -> None:
         """_summary_
             Sets the distance of each wheels from the centre using Pythagorus Theorum.
-
-        Args: (mm)
-            d1 (tuple, coordinates): . Defaults to (61,35).
-            d2 (tuple, coordinates): . Defaults to (50,50).
-            d3 (tuple, coordinates): . Defaults to (50,50).
-            d4 (tuple, coordinates): . Defaults to (61,32).
-            
         """
 
-        self.d1 = np.sqrt(d1[0]**2+d1[1]**2)/self.u
-        self.d2 = np.sqrt(d2[0]**2+d2[1]**2)/self.u
-        self.d3 = np.sqrt(d3[0]**2+d3[1]**2)/self.u
-        self.d4 = np.sqrt(d4[0]**2+d4[1]**2)/self.u
+        self.d1 = np.sqrt(self.OMNIWHEEL_1_XY_COORDINATES[0]**2+self.OMNIWHEEL_1_XY_COORDINATES[1]**2)/self._u
+        self.d2 = np.sqrt(self.OMNIWHEEL_2_XY_COORDINATES[0]**2+self.OMNIWHEEL_2_XY_COORDINATES[1]**2)/self._u
+        self.d3 = np.sqrt(self.OMNIWHEEL_3_XY_COORDINATES[0]**2+self.OMNIWHEEL_3_XY_COORDINATES[1]**2)/self._u
+        self.d4 = np.sqrt(self.OMNIWHEEL_4_XY_COORDINATES[0]**2+self.OMNIWHEEL_4_XY_COORDINATES[1]**2)/self._u
 
-        print(f"{self.d1=}, {self.d2=}, {self.d3=}, {self.d4=}")
-
-
-    def set_r(self, r=33.5):
+    def set_wheel_radius(self) -> None:
         """_summary_
             sets radius of the wheel (applying unit scaling)
-        Args:
-            r (float, radius): radius of wheels. Defaults to 33.5mm.
         """
-        self.r = r/self.u
+        self.r1 = self.OMNIWHEEL_1_RADIUS/self._u
+        self.r2 = self.OMNIWHEEL_2_RADIUS/self._u
+        self.r3 = self.OMNIWHEEL_3_RADIUS/self._u
+        self.r4 = self.OMNIWHEEL_4_RADIUS/self._u
 
-        print(f"{self.r=}")
-
-    def listen(self, namespace):        
+    async def run(self) -> None: # NOT IN USE
+        raise DeprecationWarning('use MotorController2')
+        await self._make_stop()
         while True:
-            if self.event_action_is_set.is_set():
-                action = namespace.action
-                self.event_action_is_set.clear()
-                asyncio.run(self.run(action))
-    
-    async def run(self, action):
-        if not isinstance(action, Action):
-            raise TypeError(f"unexpected type: expected 'Action', got: {action.__class__}")
-        await self.action(action)
+            try:
+                self.tc_action_recv_event.wait()
+                action = self.shared_global_resource.get_action()
+                if not isinstance(action, Action):
+                    raise TypeError(f"unexpected type: expected 'Action', got: {action.__class__}")
+                log.info(f"running {action}")
+                await self.do(action)
+                self._tc_action_recv_event.clear()
+            except KeyboardInterrupt:
+                await self._exit()
+            except asyncio.CancelledError:
+                await self._exit()
+
+            # power_telemetry = await self.steam.read_data("power")
+            # log.info(power_telemetry)
+            # self.shared_global_resource.set_voltage(power_telemetry.output_voltage_V)
+            # self.shared_global_resource.set_current(power_telemetry.output_current_A)
+
+            if self._gc_force_shutdown_event.is_set():
+                break
 
     @staticmethod
-    def add_cls_specific_arguments(parent):
+    def add_cls_specific_arguments(parent: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        '''
+            add_cls_specific_arguments
+                adds:
+                    --disable-motor-controller argument which disables the motors when set
+
+            @args:
+                parent (argparse.ArgumentParser): argparse object from run.py
+            
+        '''
+        parser = parent.add_argument_group('MotorController')
+        parser.add_argument('--disable-motor-controller', action='store_true')
         return parent
+    
+    async def _exit(self):
+        await self._make_stop()
+    
+    async def _make_stop(self):
+        await self.transport.cycle(x.make_stop() for x in self.controllers.values())
+
+    @property
+    def scaling(self): # scale the motor controller actions from 'mm' to something else
+        return self._u
+    
+    @scaling.setter
+    def scaling(self, u):
+        if not isinstance(u, int):
+            raise ValueError
+        self._u = u
+    
+    @property
+    def interval(self): # action time interval (ms)
+        return self._interval
+    
+    @interval.setter
+    def interval(self, interval):
+        if not isinstance(interval, int):
+            raise ValueError
+        self._interval = interval
+
+class MotorControllerFactory:
+    @staticmethod
+    def __call__(shared_global_resource, event, args) -> None:
+        motor = MotorController(shared_global_resource)
+        motor.tc_action_recv_event = event['tc_action_recv_event']
+        motor.gc_force_shutdown_event = event['gc_force_shutdown_event']
+        asyncio.run(motor.run())

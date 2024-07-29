@@ -9,13 +9,14 @@ import asyncio
 from Client.Shared.Action import Action
 from Client.Controllers.Motor import Motor
 
-async def main(motor):
+async def main(motor: Motor) -> None:
     await motor.transport.cycle(x.make_stop() for x in motor.servos.values())
 
-async def run(motor, action):
+async def run(motor: Motor, action: Action) -> None:
     await motor.run(action)
 
-if __name__ == '__main__':
+if __name__ == '__main__': 
+    raise UserWarning('NOT IMPLEMENTED')
     os.environ['SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS'] = "1"
     motor = Motor()
     asyncio.run(main(motor))

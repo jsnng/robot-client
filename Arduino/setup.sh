@@ -4,6 +4,8 @@
 
 curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 
+export PATH="$HOME/bin:$PATH"
+
 echo 'export PATH="$HOME/bin:$PATH"'>> ~/.bashrc
 source ~/.bashrc
 
