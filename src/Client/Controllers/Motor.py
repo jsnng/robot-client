@@ -35,10 +35,10 @@ class MotorController(BaseController):
 
     # angle of wheel's direction of travel when rotating clockwise
     # referenced from the robot's forward movement
-    OMNIWHEEL_1_CW_ANGLE_DEG: int = -120
-    OMNIWHEEL_2_CW_ANGLE_DEG: int = -45
-    OMNIWHEEL_3_CW_ANGLE_DEG: int = 45
-    OMNIWHEEL_4_CW_ANGLE_DEG: int = 120
+    OMNIWHEEL_1_CW_ANGLE_DEG: int = 120
+    OMNIWHEEL_2_CW_ANGLE_DEG: int = 45
+    OMNIWHEEL_3_CW_ANGLE_DEG: int = -45
+    OMNIWHEEL_4_CW_ANGLE_DEG: int = -120
 
     # radius of omniwheel in mm
     OMNIWHEEL_1_RADIUS: float = 33.5
